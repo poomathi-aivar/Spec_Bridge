@@ -1,0 +1,10 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.kiro
+node_modules
+frontend/node_modules
+frontend/.next
+.env

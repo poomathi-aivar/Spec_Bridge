@@ -1,0 +1,599 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  SPEC BRIDGE — BRD-to-Tech-Spec Agent Infrastructure
+  Serverless pipeline using 7 Lambda functions, Step Functions, Bedrock Knowledge Base,
+  S3, DynamoDB, API Gateway, and Secrets Manager.
+  Validates: Requirements 1.1–1.9, 7.1–7.8
+
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+    Description: Deployment stage name
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-5-sonnet-20240620-v1:0
+    Description: Bedrock foundation model ID for AI inference
+  KMSKeyArn:
+    Type: String
+    Description: ARN of the KMS key for S3 server-side encryption
+  EmbeddingModelArn:
+    Type: String
+    Default: arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0
+    Description: ARN of the embedding model for the Knowledge Base
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 300
+    MemorySize: 512
+    Environment:
+      Variables:
+        BUCKET_NAME: !Ref DocumentsBucket
+        PROJECTS_TABLE: !Ref ProjectsTable
+        JOBS_TABLE: !Ref JobsTable
+        SECRET_NAME: !Ref SpecBridgeSecret
+        BEDROCK_MODEL_ID: !Ref BedrockModelId
+        KNOWLEDGE_BASE_ID: !Ref BedrockKnowledgeBase
+
+Resources:
+  # ============================================================
+  # S3 Bucket — Document storage with SSE-KMS encryption
+  # Prefixes: uploads/, kb-data/, outputs/
+  # ============================================================
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub spec-bridge-documents-${AWS::AccountId}-${StageName}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KMSKeyArn
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: CleanupIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  # ============================================================
+  # DynamoDB Tables — ProjectRecord and JobRecord
+  # ============================================================
+  ProjectsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub spec-bridge-projects-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: project_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: project_id
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub spec-bridge-jobs-${StageName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+        - AttributeName: project_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: project-id-index
+          KeySchema:
+            - AttributeName: project_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # ============================================================
+  # Secrets Manager — API keys and credentials
+  # ============================================================
+  SpecBridgeSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub spec-bridge/credentials-${StageName}
+      Description: SPEC BRIDGE API keys and model access credentials
+      SecretString: '{"placeholder": "replace-with-actual-credentials"}'
+
+  # ============================================================
+  # Bedrock Knowledge Base — S3 data source for cross-document RAG
+  # ============================================================
+  KnowledgeBaseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub spec-bridge-kb-role-${StageName}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: KnowledgeBaseS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt DocumentsBucket.Arn
+                  - !Sub ${DocumentsBucket.Arn}/kb-data/*
+        - PolicyName: KnowledgeBaseBedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - !Ref EmbeddingModelArn
+
+  BedrockKnowledgeBase:
+    Type: AWS::Bedrock::KnowledgeBase
+    Properties:
+      Name: !Sub spec-bridge-kb-${StageName}
+      Description: Knowledge Base for cross-document retrieval in SPEC BRIDGE projects
+      RoleArn: !GetAtt KnowledgeBaseRole.Arn
+      KnowledgeBaseConfiguration:
+        Type: VECTOR
+        VectorKnowledgeBaseConfiguration:
+          EmbeddingModelArn: !Ref EmbeddingModelArn
+      StorageConfiguration:
+        Type: OPENSEARCH_SERVERLESS
+        OpensearchServerlessConfiguration:
+          CollectionArn: !GetAtt KBCollection.Arn
+          VectorIndexName: spec-bridge-index
+          FieldMapping:
+            VectorField: embedding
+            TextField: text
+            MetadataField: metadata
+
+  KBCollection:
+    Type: AWS::OpenSearchServerless::Collection
+    Properties:
+      Name: !Sub spec-bridge-kb-${StageName}
+      Type: VECTORSEARCH
+      Description: Vector store for SPEC BRIDGE Knowledge Base
+
+  KBCollectionAccessPolicy:
+    Type: AWS::OpenSearchServerless::AccessPolicy
+    Properties:
+      Name: !Sub spec-bridge-kb-access-${StageName}
+      Type: data
+      Policy: !Sub |
+        [
+          {
+            "Rules": [
+              {
+                "ResourceType": "collection",
+                "Resource": ["collection/spec-bridge-kb-${StageName}"],
+                "Permission": ["aoss:*"]
+              },
+              {
+                "ResourceType": "index",
+                "Resource": ["index/spec-bridge-kb-${StageName}/*"],
+                "Permission": ["aoss:*"]
+              }
+            ],
+            "Principal": ["${KnowledgeBaseRole.Arn}"]
+          }
+        ]
+
+  KBCollectionSecurityPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: !Sub spec-bridge-kb-enc-${StageName}
+      Type: encryption
+      Policy: !Sub |
+        {
+          "Rules": [
+            {
+              "ResourceType": "collection",
+              "Resource": ["collection/spec-bridge-kb-${StageName}"]
+            }
+          ],
+          "AWSOwnedKey": true
+        }
+
+  KBCollectionNetworkPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: !Sub spec-bridge-kb-net-${StageName}
+      Type: network
+      Policy: !Sub |
+        [
+          {
+            "Rules": [
+              {
+                "ResourceType": "collection",
+                "Resource": ["collection/spec-bridge-kb-${StageName}"]
+              }
+            ],
+            "AllowFromPublic": true
+          }
+        ]
+
+  BedrockKnowledgeBaseDataSource:
+    Type: AWS::Bedrock::DataSource
+    Properties:
+      KnowledgeBaseId: !Ref BedrockKnowledgeBase
+      Name: !Sub spec-bridge-s3-datasource-${StageName}
+      Description: S3 data source for project documents
+      DataSourceConfiguration:
+        Type: S3
+        S3Configuration:
+          BucketArn: !GetAtt DocumentsBucket.Arn
+          InclusionPrefixes:
+            - kb-data/
+
+  # ============================================================
+  # API Gateway REST API
+  # ============================================================
+  SpecBridgeApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub spec-bridge-api-${StageName}
+      StageName: !Ref StageName
+      BinaryMediaTypes:
+        - multipart/form-data
+        - application/octet-stream
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Filename'"
+        AllowOrigin: "'*'"
+      EndpointConfiguration:
+        Type: REGIONAL
+
+  # ============================================================
+  # Lambda Functions — 7 pipeline functions
+  # ============================================================
+
+  # 1. Upload Service
+  UploadServiceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub spec-bridge-upload-service-${StageName}
+      Handler: src/lambdas/upload_service/handler.handler
+      CodeUri: ../
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref PipelineStateMachine
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref DocumentsBucket
+        - KMSEncryptPolicy:
+            KeyId: !Ref KMSKeyArn
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProjectsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - states:StartExecution
+              Resource: !Ref PipelineStateMachine
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref SpecBridgeSecret
+      Events:
+        PostProjects:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SpecBridgeApi
+            Path: /projects
+            Method: POST
+
+  # 2. Document Processor
+  DocumentProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub spec-bridge-document-processor-${StageName}
+      Handler: src/lambdas/document_processor/handler.handler
+      CodeUri: ../
+      Timeout: 900
+      MemorySize: 1024
+      Environment:
+        Variables:
+          DATA_SOURCE_ID: !Ref BedrockKnowledgeBaseDataSource
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref DocumentsBucket
+        - KMSEncryptPolicy:
+            KeyId: !Ref KMSKeyArn
+        - KMSDecryptPolicy:
+            KeyId: !Ref KMSKeyArn
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:StartIngestionJob
+                - bedrock:GetIngestionJob
+              Resource: !GetAtt BedrockKnowledgeBase.KnowledgeBaseArn
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref SpecBridgeSecret
+
+  # 3. Requirement Extractor
+  RequirementExtractorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub spec-bridge-requirement-extractor-${StageName}
+      Handler: src/lambdas/requirement_extractor/handler.handler
+      CodeUri: ../
+      Timeout: 900
+      MemorySize: 1024
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:Retrieve
+              Resource: !GetAtt BedrockKnowledgeBase.KnowledgeBaseArn
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref SpecBridgeSecret
+
+  # 4. Tech Designer
+  TechDesignerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub spec-bridge-tech-designer-${StageName}
+      Handler: src/lambdas/tech_designer/handler.handler
+      CodeUri: ../
+      Timeout: 900
+      MemorySize: 1024
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:Retrieve
+              Resource: !GetAtt BedrockKnowledgeBase.KnowledgeBaseArn
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref SpecBridgeSecret
+
+  # 5. Architecture Advisor
+  ArchitectureAdvisorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub spec-bridge-architecture-advisor-${StageName}
+      Handler: src/lambdas/architecture_advisor/handler.handler
+      CodeUri: ../
+      Timeout: 900
+      MemorySize: 1024
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:Retrieve
+              Resource: !GetAtt BedrockKnowledgeBase.KnowledgeBaseArn
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref SpecBridgeSecret
+
+  # 6. Tech Spec Assembler
+  TechSpecAssemblerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub spec-bridge-tech-spec-assembler-${StageName}
+      Handler: src/lambdas/tech_spec_assembler/handler.handler
+      CodeUri: ../
+      Timeout: 300
+      MemorySize: 1024
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref DocumentsBucket
+        - KMSEncryptPolicy:
+            KeyId: !Ref KMSKeyArn
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref SpecBridgeSecret
+
+  # 7. Status API
+  StatusApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub spec-bridge-status-api-${StageName}
+      Handler: src/lambdas/status_api/handler.handler
+      CodeUri: ../
+      Timeout: 30
+      MemorySize: 256
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref JobsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref ProjectsTable
+        - S3ReadPolicy:
+            BucketName: !Ref DocumentsBucket
+        - KMSDecryptPolicy:
+            KeyId: !Ref KMSKeyArn
+      Events:
+        GetStatus:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SpecBridgeApi
+            Path: /projects/{projectId}/status
+            Method: GET
+        GetDownload:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SpecBridgeApi
+            Path: /projects/{projectId}/download
+            Method: GET
+
+  # ============================================================
+  # Step Functions State Machine — Pipeline Orchestrator
+  # ============================================================
+  StepFunctionsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub spec-bridge-sfn-role-${StageName}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeLambdaFunctions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt DocumentProcessorFunction.Arn
+                  - !GetAtt RequirementExtractorFunction.Arn
+                  - !GetAtt TechDesignerFunction.Arn
+                  - !GetAtt ArchitectureAdvisorFunction.Arn
+                  - !GetAtt TechSpecAssemblerFunction.Arn
+        - PolicyName: UpdateDynamoDB
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                Resource:
+                  - !GetAtt JobsTable.Arn
+
+  PipelineStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub spec-bridge-pipeline-${StageName}
+      DefinitionUri: step_functions_definition.asl.json
+      DefinitionSubstitutions:
+        JobsTableName: !Ref JobsTable
+        DocumentProcessorFunctionArn: !GetAtt DocumentProcessorFunction.Arn
+        RequirementExtractorFunctionArn: !GetAtt RequirementExtractorFunction.Arn
+        TechDesignerFunctionArn: !GetAtt TechDesignerFunction.Arn
+        ArchitectureAdvisorFunctionArn: !GetAtt ArchitectureAdvisorFunction.Arn
+        TechSpecAssemblerFunctionArn: !GetAtt TechSpecAssemblerFunction.Arn
+      Role: !GetAtt StepFunctionsExecutionRole.Arn
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub https://${SpecBridgeApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
+
+  DocumentsBucketName:
+    Description: S3 bucket for document storage
+    Value: !Ref DocumentsBucket
+
+  DocumentsBucketArn:
+    Description: S3 bucket ARN
+    Value: !GetAtt DocumentsBucket.Arn
+
+  ProjectsTableName:
+    Description: DynamoDB table for project records
+    Value: !Ref ProjectsTable
+
+  JobsTableName:
+    Description: DynamoDB table for job records
+    Value: !Ref JobsTable
+
+  KnowledgeBaseId:
+    Description: Bedrock Knowledge Base ID
+    Value: !Ref BedrockKnowledgeBase
+
+  DataSourceId:
+    Description: Bedrock Knowledge Base data source ID
+    Value: !Ref BedrockKnowledgeBaseDataSource
+
+  StateMachineArn:
+    Description: Step Functions state machine ARN
+    Value: !Ref PipelineStateMachine
+
+  UploadServiceFunctionArn:
+    Description: Upload Service Lambda ARN
+    Value: !GetAtt UploadServiceFunction.Arn
+
+  DocumentProcessorFunctionArn:
+    Description: Document Processor Lambda ARN
+    Value: !GetAtt DocumentProcessorFunction.Arn
+
+  RequirementExtractorFunctionArn:
+    Description: Requirement Extractor Lambda ARN
+    Value: !GetAtt RequirementExtractorFunction.Arn
+
+  TechDesignerFunctionArn:
+    Description: Tech Designer Lambda ARN
+    Value: !GetAtt TechDesignerFunction.Arn
+
+  ArchitectureAdvisorFunctionArn:
+    Description: Architecture Advisor Lambda ARN
+    Value: !GetAtt ArchitectureAdvisorFunction.Arn
+
+  TechSpecAssemblerFunctionArn:
+    Description: Tech Spec Assembler Lambda ARN
+    Value: !GetAtt TechSpecAssemblerFunction.Arn
+
+  StatusApiFunctionArn:
+    Description: Status API Lambda ARN
+    Value: !GetAtt StatusApiFunction.Arn
+
+  SecretArn:
+    Description: Secrets Manager secret ARN
+    Value: !Ref SpecBridgeSecret

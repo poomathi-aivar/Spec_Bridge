@@ -1,0 +1,602 @@
+{
+  "Comment": "SPEC BRIDGE Pipeline Orchestrator - Orchestrates the BRD-to-Tech-Spec translation workflow. Validates: Requirements 7.1, 7.2, 7.4, 7.6, 7.7, 7.8",
+  "StartAt": "UpdateStatusProcessing",
+  "States": {
+    "UpdateStatusProcessing": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "spec-bridge-jobs",
+        "Key": {
+          "job_id": {
+            "S.$": "$.jobId"
+          }
+        },
+        "UpdateExpression": "SET #s = :status, current_stage = :stage, updated_at = :ts",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "PROCESSING_DOCUMENTS"
+          },
+          ":stage": {
+            "S": "DocumentProcessor"
+          },
+          ":ts": {
+            "S.$": "$$.State.EnteredTime"
+          }
+        }
+      },
+      "ResultPath": "$.statusUpdate",
+      "Next": "ProcessDocuments"
+    },
+    "ProcessDocuments": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:ap-south-1:831493647146:function:spec-bridge-document-processor",
+        "Payload": {
+          "projectId.$": "$.projectId",
+          "documents.$": "$.documents"
+        }
+      },
+      "ResultPath": "$.processorResult",
+      "ResultSelector": {
+        "projectId.$": "$.Payload.projectId",
+        "parsedDocuments.$": "$.Payload.parsedDocuments",
+        "processorOutputS3Key.$": "$.Payload.processorOutputS3Key",
+        "kbIngestionJobId.$": "$.Payload.kbIngestionJobId",
+        "kbIngestionStatus.$": "$.Payload.kbIngestionStatus"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "HandleProcessDocumentsFailure"
+        }
+      ],
+      "Next": "CheckKBIngestionComplete"
+    },
+    "HandleProcessDocumentsFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "spec-bridge-jobs",
+        "Key": {
+          "job_id": {
+            "S.$": "$.jobId"
+          }
+        },
+        "UpdateExpression": "SET #s = :status, current_stage = :stage, error_message = :err, updated_at = :ts",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "FAILED"
+          },
+          ":stage": {
+            "S": "DocumentProcessor"
+          },
+          ":err": {
+            "S.$": "$.error.Cause"
+          },
+          ":ts": {
+            "S.$": "$$.State.EnteredTime"
+          }
+        }
+      },
+      "ResultPath": "$.failureUpdate",
+      "Next": "PipelineFailed"
+    },
+    "CheckKBIngestionComplete": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.processorResult.kbIngestionStatus",
+          "StringEquals": "COMPLETE",
+          "Next": "UpdateStatusExtractingRequirements"
+        },
+        {
+          "Variable": "$.processorResult.kbIngestionStatus",
+          "StringEquals": "FAILED",
+          "Next": "HandleKBIngestionFailure"
+        }
+      ],
+      "Default": "UpdateStatusExtractingRequirements"
+    },
+    "HandleKBIngestionFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "spec-bridge-jobs",
+        "Key": {
+          "job_id": {
+            "S.$": "$.jobId"
+          }
+        },
+        "UpdateExpression": "SET #s = :status, current_stage = :stage, error_message = :err, updated_at = :ts",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "FAILED"
+          },
+          ":stage": {
+            "S": "KBIngestion"
+          },
+          ":err": {
+            "S": "Knowledge Base ingestion failed. Cannot proceed with downstream processing."
+          },
+          ":ts": {
+            "S.$": "$$.State.EnteredTime"
+          }
+        }
+      },
+      "ResultPath": "$.failureUpdate",
+      "Next": "PipelineFailed"
+    },
+    "UpdateStatusExtractingRequirements": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "spec-bridge-jobs",
+        "Key": {
+          "job_id": {
+            "S.$": "$.jobId"
+          }
+        },
+        "UpdateExpression": "SET #s = :status, current_stage = :stage, updated_at = :ts",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "EXTRACTING_REQUIREMENTS"
+          },
+          ":stage": {
+            "S": "RequirementExtractor"
+          },
+          ":ts": {
+            "S.$": "$$.State.EnteredTime"
+          }
+        }
+      },
+      "ResultPath": "$.statusUpdate",
+      "Next": "ExtractRequirements"
+    },
+    "ExtractRequirements": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:ap-south-1:831493647146:function:spec-bridge-requirement-extractor",
+        "Payload": {
+          "projectId.$": "$.projectId",
+          "parsedDocuments.$": "$.processorResult.parsedDocuments",
+          "processorOutputS3Key.$": "$.processorResult.processorOutputS3Key",
+          "knowledgeBaseId.$": "$.knowledgeBaseId"
+        }
+      },
+      "ResultPath": "$.extractorResult",
+      "ResultSelector": {
+        "projectId.$": "$.Payload.projectId",
+        "requirements.$": "$.Payload.requirements",
+        "explanations.$": "$.Payload.explanations",
+        "glossary.$": "$.Payload.glossary",
+        "warnings.$": "$.Payload.warnings",
+        "duplicatesRemoved.$": "$.Payload.duplicatesRemoved"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "HandleExtractRequirementsFailure"
+        }
+      ],
+      "Next": "UpdateStatusGenerating"
+    },
+    "HandleExtractRequirementsFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "spec-bridge-jobs",
+        "Key": {
+          "job_id": {
+            "S.$": "$.jobId"
+          }
+        },
+        "UpdateExpression": "SET #s = :status, current_stage = :stage, error_message = :err, updated_at = :ts",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "FAILED"
+          },
+          ":stage": {
+            "S": "RequirementExtractor"
+          },
+          ":err": {
+            "S.$": "$.error.Cause"
+          },
+          ":ts": {
+            "S.$": "$$.State.EnteredTime"
+          }
+        }
+      },
+      "ResultPath": "$.failureUpdate",
+      "Next": "PipelineFailed"
+    },
+    "UpdateStatusGenerating": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "spec-bridge-jobs",
+        "Key": {
+          "job_id": {
+            "S.$": "$.jobId"
+          }
+        },
+        "UpdateExpression": "SET #s = :status, current_stage = :stage, updated_at = :ts",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "GENERATING"
+          },
+          ":stage": {
+            "S": "ParallelGeneration"
+          },
+          ":ts": {
+            "S.$": "$$.State.EnteredTime"
+          }
+        }
+      },
+      "ResultPath": "$.statusUpdate",
+      "Next": "ParallelGeneration"
+    },
+    "ParallelGeneration": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "DesignTechnicalArtifacts",
+          "States": {
+            "DesignTechnicalArtifacts": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "arn:aws:lambda:ap-south-1:831493647146:function:spec-bridge-tech-designer",
+                "Payload": {
+                  "projectId.$": "$.projectId",
+                  "requirements.$": "$.extractorResult.requirements",
+                  "knowledgeBaseId.$": "$.knowledgeBaseId"
+                }
+              },
+              "ResultSelector": {
+                "projectId.$": "$.Payload.projectId",
+                "openApiSpec.$": "$.Payload.openApiSpec",
+                "ddlStatements.$": "$.Payload.ddlStatements",
+                "erDescription.$": "$.Payload.erDescription",
+                "workflows.$": "$.Payload.workflows"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException"
+                  ],
+                  "IntervalSeconds": 5,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "ResultPath": "$.branchError",
+                  "Next": "TechDesignerFailed"
+                }
+              ],
+              "End": true
+            },
+            "TechDesignerFailed": {
+              "Type": "Pass",
+              "Result": {
+                "projectId": null,
+                "openApiSpec": null,
+                "ddlStatements": null,
+                "erDescription": null,
+                "workflows": null,
+                "failed": true,
+                "failedStage": "TechDesigner"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "RecommendArchitecture",
+          "States": {
+            "RecommendArchitecture": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "arn:aws:lambda:ap-south-1:831493647146:function:spec-bridge-architecture-advisor",
+                "Payload": {
+                  "projectId.$": "$.projectId",
+                  "requirements.$": "$.extractorResult.requirements",
+                  "knowledgeBaseId.$": "$.knowledgeBaseId"
+                }
+              },
+              "ResultSelector": {
+                "projectId.$": "$.Payload.projectId",
+                "architectureRecommendation.$": "$.Payload.architectureRecommendation"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException"
+                  ],
+                  "IntervalSeconds": 5,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "ResultPath": "$.branchError",
+                  "Next": "ArchitectureAdvisorFailed"
+                }
+              ],
+              "End": true
+            },
+            "ArchitectureAdvisorFailed": {
+              "Type": "Pass",
+              "Result": {
+                "projectId": null,
+                "architectureRecommendation": null,
+                "failed": true,
+                "failedStage": "ArchitectureAdvisor"
+              },
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultPath": "$.parallelResults",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "HandleParallelGenerationFailure"
+        }
+      ],
+      "Next": "UpdateStatusAssembling"
+    },
+    "HandleParallelGenerationFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "spec-bridge-jobs",
+        "Key": {
+          "job_id": {
+            "S.$": "$.jobId"
+          }
+        },
+        "UpdateExpression": "SET #s = :status, current_stage = :stage, error_message = :err, updated_at = :ts",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "FAILED"
+          },
+          ":stage": {
+            "S": "ParallelGeneration"
+          },
+          ":err": {
+            "S.$": "$.error.Cause"
+          },
+          ":ts": {
+            "S.$": "$$.State.EnteredTime"
+          }
+        }
+      },
+      "ResultPath": "$.failureUpdate",
+      "Next": "PipelineFailed"
+    },
+    "UpdateStatusAssembling": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "spec-bridge-jobs",
+        "Key": {
+          "job_id": {
+            "S.$": "$.jobId"
+          }
+        },
+        "UpdateExpression": "SET #s = :status, current_stage = :stage, updated_at = :ts",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "ASSEMBLING"
+          },
+          ":stage": {
+            "S": "TechSpecAssembler"
+          },
+          ":ts": {
+            "S.$": "$$.State.EnteredTime"
+          }
+        }
+      },
+      "ResultPath": "$.statusUpdate",
+      "Next": "AssembleTechSpec"
+    },
+    "AssembleTechSpec": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:ap-south-1:831493647146:function:spec-bridge-tech-spec-assembler",
+        "Payload": {
+          "projectId.$": "$.projectId",
+          "summaries.$": "$.processorResult.parsedDocuments[*].summary",
+          "explanations.$": "$.extractorResult.explanations",
+          "glossary.$": "$.extractorResult.glossary",
+          "openApiSpec.$": "$.parallelResults[0].openApiSpec",
+          "ddlStatements.$": "$.parallelResults[0].ddlStatements",
+          "erDescription.$": "$.parallelResults[0].erDescription",
+          "workflows.$": "$.parallelResults[0].workflows",
+          "architectureRecommendation.$": "$.parallelResults[1].architectureRecommendation",
+          "warnings.$": "$.extractorResult.warnings",
+          "images.$": "$.processorResult.parsedDocuments[*].parsedDocument.images"
+        }
+      },
+      "ResultPath": "$.assemblerResult",
+      "ResultSelector": {
+        "projectId.$": "$.Payload.projectId",
+        "markdownS3Key.$": "$.Payload.markdownS3Key",
+        "pdfS3Key.$": "$.Payload.pdfS3Key"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "HandleAssembleTechSpecFailure"
+        }
+      ],
+      "Next": "UpdateStatusCompleted"
+    },
+    "HandleAssembleTechSpecFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "spec-bridge-jobs",
+        "Key": {
+          "job_id": {
+            "S.$": "$.jobId"
+          }
+        },
+        "UpdateExpression": "SET #s = :status, current_stage = :stage, error_message = :err, updated_at = :ts",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "FAILED"
+          },
+          ":stage": {
+            "S": "TechSpecAssembler"
+          },
+          ":err": {
+            "S.$": "$.error.Cause"
+          },
+          ":ts": {
+            "S.$": "$$.State.EnteredTime"
+          }
+        }
+      },
+      "ResultPath": "$.failureUpdate",
+      "Next": "PipelineFailed"
+    },
+    "UpdateStatusCompleted": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "spec-bridge-jobs",
+        "Key": {
+          "job_id": {
+            "S.$": "$.jobId"
+          }
+        },
+        "UpdateExpression": "SET #s = :status, current_stage = :stage, output_markdown_s3_key = :md, output_pdf_s3_key = :pdf, updated_at = :ts",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "COMPLETED"
+          },
+          ":stage": {
+            "S": "TechSpecAssembler"
+          },
+          ":md": {
+            "S.$": "$.assemblerResult.markdownS3Key"
+          },
+          ":pdf": {
+            "S.$": "$.assemblerResult.pdfS3Key"
+          },
+          ":ts": {
+            "S.$": "$$.State.EnteredTime"
+          }
+        }
+      },
+      "ResultPath": "$.statusUpdate",
+      "Next": "PipelineSucceeded"
+    },
+    "PipelineSucceeded": {
+      "Type": "Succeed"
+    },
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Cause": "One or more pipeline stages failed.",
+      "Error": "PipelineExecutionFailed"
+    }
+  }
+}

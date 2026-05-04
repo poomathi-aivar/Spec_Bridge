@@ -1,0 +1,57 @@
+version: "3.9"
+
+services:
+  # ---------- Backend API ----------
+  backend:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    container_name: spec-bridge-backend
+    ports:
+      - "8000:8000"
+    environment:
+      # AWS credentials
+      - AWS_REGION=${AWS_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
+      # S3
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - S3_SSE_TYPE=${S3_SSE_TYPE:-AES256}
+      - S3_KMS_KEY_ID=${S3_KMS_KEY_ID:-}
+      # DynamoDB
+      - DYNAMODB_JOBS_TABLE_NAME=${DYNAMODB_JOBS_TABLE_NAME}
+      - DYNAMODB_PROJECTS_TABLE_NAME=${DYNAMODB_PROJECTS_TABLE_NAME}
+      # Bedrock
+      - BEDROCK_CLAUDE_MODEL_ID=${BEDROCK_CLAUDE_MODEL_ID}
+      - BEDROCK_KB_ID=${BEDROCK_KB_ID}
+      - BEDROCK_KB_DATA_SOURCE_ID=${BEDROCK_KB_DATA_SOURCE_ID}
+      # Secrets Manager
+      - SECRET_NAME=${SECRET_NAME}
+      # Step Functions
+      - STATE_MACHINE_ARN=${STATE_MACHINE_ARN:-}
+    volumes:
+      - ./src:/app/src:ro
+      - ./local_server.py:/app/local_server.py:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ---------- Frontend ----------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    container_name: spec-bridge-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      backend:
+        condition: service_healthy

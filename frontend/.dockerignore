@@ -1,0 +1,12 @@
+node_modules
+.next
+.env.local
+.env
+__tests__
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+Dockerfile
+.dockerignore
+README.md
