@@ -212,13 +212,51 @@ def _strip_code_fences(text: str) -> str:
     return text
 
 
+def _sanitize_json_string(text: str) -> str:
+    """Remove or escape control characters that break JSON parsing."""
+    import re
+    # Replace unescaped control characters (except \n, \r, \t which are valid in JSON strings when escaped)
+    # This handles cases where Claude puts literal newlines inside JSON string values
+    result = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+    return result
+
+
+def _extract_schema_fallback(text: str) -> dict[str, str]:
+    """Fallback parser when JSON parsing fails for schema response.
+
+    Tries to extract DDL and ER description from the raw text.
+    """
+    import re
+    # Try to find DDL between markers
+    ddl = ""
+    er = ""
+
+    # Look for CREATE TABLE statements
+    ddl_match = re.search(r'(CREATE\s+TABLE[\s\S]*?;(?:\s*CREATE[\s\S]*?;)*(?:\s*CREATE\s+INDEX[\s\S]*?;)*)', text, re.IGNORECASE)
+    if ddl_match:
+        ddl = ddl_match.group(1).strip()
+
+    # Look for ER description - text after the DDL or in a description field
+    er_match = re.search(r'"er_description"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', text)
+    if er_match:
+        er = er_match.group(1).replace('\\n', '\n').replace('\\"', '"')
+    elif not er:
+        er = "Entity relationships derived from the generated schema."
+
+    if not ddl:
+        raise ValueError("Could not extract DDL from schema response")
+
+    return {"ddl_statements": ddl, "er_description": er}
+
+
 def _parse_openapi_response(response_text: str) -> dict[str, Any]:
     """Parse and validate the OpenAPI specification response.
 
     Validates that the response contains required OpenAPI 3.0 structure.
     """
     text = _strip_code_fences(response_text)
-    spec = json.loads(text)
+    text = _sanitize_json_string(text)
+    spec = json.loads(text, strict=False)
 
     # Validate basic OpenAPI structure
     if not isinstance(spec, dict):
@@ -239,7 +277,12 @@ def _parse_schema_response(response_text: str) -> tuple[str, str]:
     Returns (ddl_statements, er_description).
     """
     text = _strip_code_fences(response_text)
-    data = json.loads(text)
+    text = _sanitize_json_string(text)
+    try:
+        data = json.loads(text, strict=False)
+    except json.JSONDecodeError:
+        # If still failing, try to extract DDL and ER description manually
+        data = _extract_schema_fallback(text)
 
     ddl_statements = data.get("ddl_statements", "")
     er_description = data.get("er_description", "")
@@ -255,7 +298,8 @@ def _parse_schema_response(response_text: str) -> tuple[str, str]:
 def _parse_workflow_response(response_text: str) -> list[Workflow]:
     """Parse the workflow design response into Workflow data model instances."""
     text = _strip_code_fences(response_text)
-    data = json.loads(text)
+    text = _sanitize_json_string(text)
+    data = json.loads(text, strict=False)
 
     workflows: list[Workflow] = []
     for wf_data in data.get("workflows", []):

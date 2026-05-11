@@ -2,8 +2,7 @@
 
 Combines all generation artifacts (summaries, explanations, glossary, OpenAPI spec,
 DDL, ER description, workflows, architecture recommendation, warnings) into a single
-structured Markdown document. Converts to PDF using WeasyPrint and uploads both
-formats to S3.
+structured Markdown document and uploads it to S3.
 
 Requirements: 6.1–6.7
 """
@@ -54,7 +53,7 @@ def _build_document_summary_section(
     Returns None if no summaries were generated.
     """
     available_summaries = [
-        s for s in summaries if s.get("summary") is not None
+        s for s in summaries if s is not None and isinstance(s, dict) and s.get("summary") is not None
     ]
     if not available_summaries:
         return None
@@ -515,73 +514,6 @@ def _assemble_markdown(
 
 
 # ---------------------------------------------------------------------------
-# PDF Generation
-# ---------------------------------------------------------------------------
-
-
-def _convert_markdown_to_pdf(markdown_content: str) -> bytes | None:
-    """Convert Markdown to PDF using WeasyPrint.
-
-    Returns None if WeasyPrint is not available (e.g., in test environments).
-    """
-    try:
-        from weasyprint import HTML  # type: ignore[import-untyped]
-    except ImportError:
-        logger.warning(
-            "WeasyPrint not available — skipping PDF generation. "
-            "Install WeasyPrint for PDF support."
-        )
-        return None
-
-    try:
-        import markdown  # type: ignore[import-untyped]
-    except ImportError:
-        logger.warning(
-            "markdown library not available — skipping PDF generation. "
-            "Install markdown for PDF support."
-        )
-        return None
-
-    try:
-        # Convert Markdown to HTML
-        html_content = markdown.markdown(
-            markdown_content,
-            extensions=["tables", "fenced_code"],
-        )
-
-        # Wrap in basic HTML document with styling
-        full_html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-    body {{ font-family: sans-serif; margin: 2cm; line-height: 1.6; }}
-    h1 {{ color: #1a1a2e; border-bottom: 2px solid #16213e; padding-bottom: 0.3em; }}
-    h2 {{ color: #16213e; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.2em; }}
-    h3 {{ color: #0f3460; }}
-    table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
-    th, td {{ border: 1px solid #e2e8f0; padding: 0.5em; text-align: left; }}
-    th {{ background-color: #f8fafc; font-weight: bold; }}
-    code {{ background-color: #f1f5f9; padding: 0.2em 0.4em; border-radius: 3px; font-size: 0.9em; }}
-    pre {{ background-color: #f1f5f9; padding: 1em; border-radius: 5px; overflow-x: auto; }}
-    pre code {{ background-color: transparent; padding: 0; }}
-    a {{ color: #2563eb; }}
-</style>
-</head>
-<body>
-{html_content}
-</body>
-</html>"""
-
-        pdf_bytes = HTML(string=full_html).write_pdf()
-        return pdf_bytes
-
-    except Exception as exc:
-        logger.error("PDF generation failed: %s", str(exc))
-        return None
-
-
-# ---------------------------------------------------------------------------
 # Main Handler
 # ---------------------------------------------------------------------------
 
@@ -657,25 +589,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     )
     logger.info("Uploaded Markdown to s3://%s", markdown_s3_key)
 
-    # Convert to PDF and upload
-    pdf_s3_key: str | None = None
-    pdf_bytes = _convert_markdown_to_pdf(markdown_content)
-    if pdf_bytes:
-        pdf_s3_key = f"outputs/{project_id}/tech-spec.pdf"
-        s3_client.upload_file(
-            key=pdf_s3_key,
-            body=pdf_bytes,
-            content_type="application/pdf",
-        )
-        logger.info("Uploaded PDF to s3://%s", pdf_s3_key)
-    else:
-        logger.warning(
-            "PDF generation skipped for project %s — only Markdown available",
-            project_id,
-        )
-
     return {
         "projectId": project_id,
         "markdownS3Key": markdown_s3_key,
-        "pdfS3Key": pdf_s3_key,
+        "pdfS3Key": "N/A",
     }

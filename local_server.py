@@ -225,6 +225,49 @@ async def get_download(project_id: str, format: str = "md"):
 
 
 # ---------------------------------------------------------------------------
+# GET /projects/{projectId}/content — Fetch markdown content directly
+# ---------------------------------------------------------------------------
+
+@app.get("/projects/{project_id}/content")
+async def get_content(project_id: str):
+    """Fetch the tech spec markdown content directly (avoids CORS issues with S3 presigned URLs)."""
+    import urllib.request
+    from src.lambdas.status_api.handler import handler as status_handler
+
+    # Get the presigned URL from the status API
+    event = _build_apigw_event(
+        method="GET",
+        path=f"/projects/{project_id}/download",
+        resource="/projects/{projectId}/download",
+        path_params={"projectId": project_id},
+        query_params={"format": "md"},
+    )
+    result = status_handler(event, None)
+    body = json.loads(result.get("body", "{}"))
+
+    if result.get("statusCode") != 200:
+        return JSONResponse(
+            content=body,
+            status_code=result.get("statusCode", 500),
+        )
+
+    download_url = body.get("downloadUrl")
+    if not download_url:
+        return JSONResponse(content={"error": "No download URL"}, status_code=404)
+
+    # Fetch the actual content from S3
+    try:
+        req = urllib.request.Request(download_url)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content = resp.read().decode("utf-8")
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse(content=content, media_type="text/markdown")
+    except Exception as exc:
+        logger.exception("Failed to fetch markdown from S3")
+        return JSONResponse(content={"error": str(exc)}, status_code=502)
+
+
+# ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
 

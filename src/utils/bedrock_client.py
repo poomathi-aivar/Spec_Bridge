@@ -10,13 +10,14 @@ import time
 from typing import Any
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.config import Config
+from botocore.exceptions import ClientError, ReadTimeoutError
 
 logger = logging.getLogger(__name__)
 
 # Model IDs
 CLAUDE_MODEL_ID = os.environ.get(
-    "BEDROCK_CLAUDE_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    "BEDROCK_CLAUDE_MODEL_ID", "arn:aws:bedrock:ap-south-1:831493647146:inference-profile/apac.anthropic.claude-3-5-sonnet-20240620-v1:0"
 )
 
 # Retry configuration
@@ -26,9 +27,14 @@ MAX_JITTER_SECONDS = 0.5
 
 
 def _get_client():
-    """Return a boto3 Bedrock Runtime client."""
+    """Return a boto3 Bedrock Runtime client with extended timeout."""
     region = os.environ.get("AWS_REGION", "us-east-1")
-    return boto3.client("bedrock-runtime", region_name=region)
+    config = Config(
+        read_timeout=300,
+        connect_timeout=10,
+        retries={"max_attempts": 0},  # We handle retries ourselves
+    )
+    return boto3.client("bedrock-runtime", region_name=region, config=config)
 
 
 def _retry_with_backoff(func, *args, **kwargs) -> Any:
@@ -49,6 +55,14 @@ def _retry_with_backoff(func, *args, **kwargs) -> Any:
                 time.sleep(delay)
             else:
                 raise
+        except ReadTimeoutError as exc:
+            last_exception = exc
+            delay = (BASE_DELAY_SECONDS * (2 ** attempt)) + random.uniform(0, MAX_JITTER_SECONDS)
+            logger.warning(
+                "Bedrock read timeout (attempt %d/%d) – retrying in %.2fs",
+                attempt + 1, MAX_RETRIES, delay,
+            )
+            time.sleep(delay)
     raise last_exception  # type: ignore[misc]
 
 

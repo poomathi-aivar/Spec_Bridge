@@ -148,7 +148,9 @@ export default function ProjectDetailPage() {
                 Tech Spec Ready
               </span>
             </div>
-            <DownloadButtons projectId={projectId} />
+            {markdownContent && (
+              <DownloadButtons projectId={projectId} markdownContent={markdownContent} />
+            )}
           </div>
 
           {/* Tech spec content */}

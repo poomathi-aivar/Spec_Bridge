@@ -109,16 +109,16 @@ export function getDownloadUrl(projectId: string, format: "md" | "pdf"): string 
 
 /**
  * Fetches the tech spec Markdown content for a completed project.
- * Calls the download endpoint with format=md and returns the text content.
+ * Uses the backend content proxy endpoint to avoid CORS issues with S3 presigned URLs.
  */
 export async function getTechSpecMarkdown(projectId: string): Promise<string> {
   const { signal, clear } = createTimeoutSignal(API_TIMEOUT_MS);
 
   try {
-    const url = getDownloadUrl(projectId, "md");
-    const response = await fetch(url, { signal });
+    const response = await fetch(`${getApiBase()}/projects/${projectId}/content`, { signal });
     if (!response.ok) {
-      throw new ApiError(response.status, { message: "Failed to fetch tech spec markdown" });
+      const error = await response.json().catch(() => ({ message: "Failed to fetch tech spec" }));
+      throw new ApiError(response.status, error);
     }
     return response.text();
   } catch (err) {

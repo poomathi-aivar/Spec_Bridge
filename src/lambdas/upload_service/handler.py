@@ -109,6 +109,7 @@ def _start_step_functions(
         "projectId": project_id,
         "documents": documents,
         "jobId": job_id,
+        "knowledgeBaseId": os.environ.get("BEDROCK_KB_ID", ""),
     })
     response = sf_client.start_execution(
         stateMachineArn=STATE_MACHINE_ARN,

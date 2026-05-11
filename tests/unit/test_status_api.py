@@ -156,14 +156,9 @@ class TestHandleDownload:
         assert "tech-spec.md" in body["downloadUrl"]
         mock_presigned.assert_called_once_with("outputs/proj-123/tech-spec.md")
 
-    @patch("src.lambdas.status_api.handler.s3_client.generate_presigned_url")
     @patch("src.lambdas.status_api.handler._get_job_by_project_id")
-    def test_download_pdf_returns_presigned_url(self, mock_get_job, mock_presigned):
-        """Download endpoint returns presigned URL for PDF format."""
-        job = _make_job_record()
-        mock_get_job.return_value = job
-        mock_presigned.return_value = "https://s3.amazonaws.com/bucket/outputs/proj-123/tech-spec.pdf?signed"
-
+    def test_download_pdf_returns_404_not_available(self, mock_get_job):
+        """Download endpoint returns 404 for PDF format with descriptive message."""
         event = _make_api_event(
             path="/projects/proj-123/download",
             resource="/projects/{projectId}/download",
@@ -171,11 +166,9 @@ class TestHandleDownload:
         )
         response = handler(event, None)
 
-        assert response["statusCode"] == 200
+        assert response["statusCode"] == 404
         body = json.loads(response["body"])
-        assert "downloadUrl" in body
-        assert "tech-spec.pdf" in body["downloadUrl"]
-        mock_presigned.assert_called_once_with("outputs/proj-123/tech-spec.pdf")
+        assert body["error"] == "PDF format is no longer available. Use format=md."
 
     @patch("src.lambdas.status_api.handler._get_job_by_project_id")
     def test_download_returns_404_when_spec_not_available(self, mock_get_job):

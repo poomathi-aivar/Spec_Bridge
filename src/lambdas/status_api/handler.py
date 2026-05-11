@@ -42,11 +42,23 @@ def _derive_stage_statuses(job: JobRecord) -> list[dict[str, Any]]:
     overall_status = (job.status or "").upper()
 
     # Find the index of the current stage
+    # Track if we're in parallel generation mode
+    is_parallel = current_stage == "ParallelGeneration"
     try:
         current_idx = PIPELINE_STAGE_ORDER.index(current_stage)
     except ValueError:
-        # current_stage not in the list (e.g. "upload") — all stages pending
-        current_idx = -1
+        if is_parallel:
+            # TechDesigner and ArchitectureAdvisor run in parallel — use TechDesigner index
+            current_idx = PIPELINE_STAGE_ORDER.index("TechDesigner")
+        else:
+            # current_stage not in the list (e.g. "upload") — all stages pending
+            current_idx = -1
+
+    # Indices of stages that run in parallel
+    parallel_indices = {
+        PIPELINE_STAGE_ORDER.index("TechDesigner"),
+        PIPELINE_STAGE_ORDER.index("ArchitectureAdvisor"),
+    }
 
     derived_stages = []
     for i, stage_name in enumerate(PIPELINE_STAGE_ORDER):
@@ -72,15 +84,18 @@ def _derive_stage_statuses(job: JobRecord) -> list[dict[str, Any]]:
         elif i == current_idx:
             # The current stage is in progress
             stage_status = "IN_PROGRESS"
+        elif is_parallel and i in parallel_indices:
+            # Both parallel stages are in progress simultaneously
+            stage_status = "IN_PROGRESS"
         else:
             # Stages after the current one are pending
             stage_status = "PENDING"
 
         derived_stages.append({
-            "stage_name": stage_name,
+            "stageName": stage_name,
             "status": stage_status,
-            "started_at": original.started_at if original else None,
-            "completed_at": original.completed_at if original else None,
+            "startedAt": original.started_at if original else None,
+            "completedAt": original.completed_at if original else None,
             "error": (job.error_message if stage_status == "FAILED" else None)
                      if original is None or not original.error else original.error,
         })
@@ -88,7 +103,7 @@ def _derive_stage_statuses(job: JobRecord) -> list[dict[str, Any]]:
     return derived_stages
 
 
-VALID_DOWNLOAD_FORMATS = {"md", "pdf"}
+VALID_DOWNLOAD_FORMATS = {"md"}
 
 
 def _json_response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:
@@ -155,14 +170,19 @@ def _handle_status(project_id: str) -> dict[str, Any]:
 
 
 def _handle_download(project_id: str, format_param: str | None) -> dict[str, Any]:
-    """Handle GET /projects/{projectId}/download?format=md|pdf.
+    """Handle GET /projects/{projectId}/download?format=md.
 
     Generates a presigned S3 URL for the requested tech spec format.
     Returns 404 if the tech spec is not yet available.
     """
+    if format_param == "pdf":
+        return _json_response(404, {
+            "error": "PDF format is no longer available. Use format=md.",
+        })
+
     if not format_param or format_param not in VALID_DOWNLOAD_FORMATS:
         return _json_response(400, {
-            "error": f"Invalid or missing format parameter. Supported formats: {sorted(VALID_DOWNLOAD_FORMATS)}",
+            "error": f"Invalid or missing format parameter. Supported formats: ['md']",
         })
 
     job = _get_job_by_project_id(project_id)
@@ -172,8 +192,6 @@ def _handle_download(project_id: str, format_param: str | None) -> dict[str, Any
     # Determine the S3 key based on the requested format
     if format_param == "md":
         s3_key = job.output_markdown_s3_key
-    else:
-        s3_key = job.output_pdf_s3_key
 
     if not s3_key:
         return _json_response(404, {"error": "Tech spec not yet available"})

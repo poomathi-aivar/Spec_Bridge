@@ -25,8 +25,16 @@ export function MermaidDiagram({ chart, className }: MermaidDiagramProps) {
         const mermaid = (await import("mermaid")).default;
         mermaid.initialize({
           startOnLoad: false,
-          theme: "default",
+          theme: "neutral",
           securityLevel: "loose",
+          themeVariables: {
+            lineColor: "#374151",
+            primaryColor: "#e0e7ff",
+            primaryTextColor: "#1f2937",
+            primaryBorderColor: "#6366f1",
+            secondaryColor: "#f3e8ff",
+            tertiaryColor: "#ecfdf5",
+          },
         });
 
         const id = `mermaid-${Math.random().toString(36).slice(2, 11)}`;
@@ -84,7 +92,7 @@ export function MermaidDiagram({ chart, className }: MermaidDiagramProps) {
   return (
     <div
       ref={containerRef}
-      className={cn("overflow-x-auto py-4", className)}
+      className={cn("overflow-x-auto rounded-lg border bg-white p-4 dark:bg-gray-50", className)}
       dangerouslySetInnerHTML={{ __html: svg }}
       aria-label="Mermaid diagram"
     />
