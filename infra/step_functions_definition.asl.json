@@ -6,7 +6,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Parameters": {
-        "TableName": "${JobsTableName}",
+        "TableName": "spec-bridge-jobs",
         "Key": {
           "job_id": {
             "S.$": "$.jobId"
@@ -35,7 +35,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "${DocumentProcessorFunctionArn}",
+        "FunctionName": "arn:aws:lambda:ap-south-1:831493647146:function:spec-bridge-document-processor",
         "Payload": {
           "projectId.$": "$.projectId",
           "documents.$": "$.documents"
@@ -76,7 +76,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Parameters": {
-        "TableName": "${JobsTableName}",
+        "TableName": "spec-bridge-jobs",
         "Key": {
           "job_id": {
             "S.$": "$.jobId"
@@ -124,7 +124,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Parameters": {
-        "TableName": "${JobsTableName}",
+        "TableName": "spec-bridge-jobs",
         "Key": {
           "job_id": {
             "S.$": "$.jobId"
@@ -156,7 +156,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Parameters": {
-        "TableName": "${JobsTableName}",
+        "TableName": "spec-bridge-jobs",
         "Key": {
           "job_id": {
             "S.$": "$.jobId"
@@ -185,7 +185,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "${RequirementExtractorFunctionArn}",
+        "FunctionName": "arn:aws:lambda:ap-south-1:831493647146:function:spec-bridge-requirement-extractor",
         "Payload": {
           "projectId.$": "$.projectId",
           "parsedDocuments.$": "$.processorResult.parsedDocuments",
@@ -229,7 +229,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Parameters": {
-        "TableName": "${JobsTableName}",
+        "TableName": "spec-bridge-jobs",
         "Key": {
           "job_id": {
             "S.$": "$.jobId"
@@ -261,7 +261,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Parameters": {
-        "TableName": "${JobsTableName}",
+        "TableName": "spec-bridge-jobs",
         "Key": {
           "job_id": {
             "S.$": "$.jobId"
@@ -296,7 +296,7 @@
               "Type": "Task",
               "Resource": "arn:aws:states:::lambda:invoke",
               "Parameters": {
-                "FunctionName": "${TechDesignerFunctionArn}",
+                "FunctionName": "arn:aws:lambda:ap-south-1:831493647146:function:spec-bridge-tech-designer",
                 "Payload": {
                   "projectId.$": "$.projectId",
                   "requirements.$": "$.extractorResult.requirements",
@@ -355,7 +355,7 @@
               "Type": "Task",
               "Resource": "arn:aws:states:::lambda:invoke",
               "Parameters": {
-                "FunctionName": "${ArchitectureAdvisorFunctionArn}",
+                "FunctionName": "arn:aws:lambda:ap-south-1:831493647146:function:spec-bridge-architecture-advisor",
                 "Payload": {
                   "projectId.$": "$.projectId",
                   "requirements.$": "$.extractorResult.requirements",
@@ -418,7 +418,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Parameters": {
-        "TableName": "${JobsTableName}",
+        "TableName": "spec-bridge-jobs",
         "Key": {
           "job_id": {
             "S.$": "$.jobId"
@@ -450,7 +450,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Parameters": {
-        "TableName": "${JobsTableName}",
+        "TableName": "spec-bridge-jobs",
         "Key": {
           "job_id": {
             "S.$": "$.jobId"
@@ -479,7 +479,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "${TechSpecAssemblerFunctionArn}",
+        "FunctionName": "arn:aws:lambda:ap-south-1:831493647146:function:spec-bridge-tech-spec-assembler",
         "Payload": {
           "projectId.$": "$.projectId",
           "summaries.$": "$.processorResult.parsedDocuments[*].summary",
@@ -527,7 +527,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Parameters": {
-        "TableName": "${JobsTableName}",
+        "TableName": "spec-bridge-jobs",
         "Key": {
           "job_id": {
             "S.$": "$.jobId"
@@ -559,7 +559,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Parameters": {
-        "TableName": "${JobsTableName}",
+        "TableName": "spec-bridge-jobs",
         "Key": {
           "job_id": {
             "S.$": "$.jobId"
